@@ -2,6 +2,9 @@ name: Build & Publish APK
 
 # 每次 push 到 master 自动构建 debug APK 并发布到 GitHub Release（tag = v{versionName}），
 # 同版本重复推送时删除旧 Release 后重建，保证 Release 始终对应最新提交。
+#
+# 签名：构建前从 secrets（RELEASE_KEYSTORE_B64 / RELEASE_SIGNING_PROPS_B64）还原稳定
+# 签名密钥库，debug 构建也使用稳定签名（见 build.gradle.kts），保证可覆盖安装升级不丢数据。
 on:
   push:
     branches: [master, main]
@@ -22,6 +25,19 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+
+      - name: Restore stable signing keys from secrets
+        env:
+          SIGNING_PROPS_B64: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$SIGNING_PROPS_B64" ] && [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release-key.jks
+            echo "$SIGNING_PROPS_B64" | base64 -d > key.properties
+            echo "signing keys restored (stable release signing for debug build)"
+          else
+            echo "WARN: signing secrets not set, debug build falls back to ephemeral debug keystore"
+          fi
 
       - name: Build debug APKs
         run: ./gradlew assembleDebug --no-daemon --stacktrace
@@ -50,5 +66,5 @@ jobs:
           gh release create "$TAG" out/*.apk \
             --repo "$REPO" \
             --title "SeleneTV v${{ steps.ver.outputs.vn }} (versionCode ${{ steps.ver.outputs.vc }})" \
-            --notes "自动构建发布 (run #${{ github.run_number }}, commit ${{ github.sha }})" \
+            --notes "自动构建发布 (run #${{ github.run_number }}, commit ${{ github.sha }})，稳定签名可覆盖安装" \
             --latest
