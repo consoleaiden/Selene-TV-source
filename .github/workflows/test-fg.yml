@@ -1,0 +1,24 @@
+name: Smoke Test F
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only signing props secret
+        env:
+          FOO: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
+        run: echo "variant F ok"
+
+  ping2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only keystore secret
+        env:
+          BAR: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: echo "variant G ok"
