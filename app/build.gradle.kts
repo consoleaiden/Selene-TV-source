@@ -44,6 +44,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // 有 key.properties（CI 从 secrets 还原）时，debug 构建也用稳定签名，
+            // 保证每次自动构建的 APK 签名一致、可直接覆盖安装升级而不丢用户数据。
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
         release {
             // 有 key.properties 时用稳定 release 签名；否则回退 debug 以便本地构建
             signingConfig = if (hasReleaseSigning) {
