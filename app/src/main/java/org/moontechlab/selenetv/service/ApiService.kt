@@ -2,6 +2,7 @@ package org.moontechlab.selenetv.service
 
 import android.util.Log
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -13,6 +14,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonArray
+import org.moontechlab.selenetv.model.AdultCategory
+import org.moontechlab.selenetv.model.AdultPermission
+import org.moontechlab.selenetv.model.AdultSource
+import org.moontechlab.selenetv.model.AdultVideo
+import org.moontechlab.selenetv.model.AdultVideoPage
 import org.moontechlab.selenetv.model.FavoriteItem
 import org.moontechlab.selenetv.model.LiveSource
 import org.moontechlab.selenetv.model.PlayRecord
@@ -476,6 +482,101 @@ object ApiService {
             throw ApiException("响应数据解析失败: ${e.message}", statusCode)
         } finally {
             connection.disconnect()
+        }
+    }
+
+    // ==================== [18+] 源站/分类/视频 API ====================
+
+    /**
+     * 当前登录用户是否有 18+ 访问权限。
+     * 401（登录失效）由 handleResponse 抛 ApiException，由调用方捕获后隐藏 tab。
+     */
+    fun getAdultPermission(): AdultPermission {
+        return get("/api/adult/permission") { obj ->
+            AdultPermission(
+                allowed = obj["allowed"]?.jsonPrimitive?.booleanOrNull ?: false
+            )
+        }
+    }
+
+    /**
+     * 获取 18+ 源站列表（形状与搜索资源对齐）。
+     */
+    fun getAdultSources(): List<AdultSource> {
+        return get("/api/adult/sources") { root ->
+            root.jsonArray.mapNotNull { element ->
+                try {
+                    val obj = element.jsonObject
+                    AdultSource(
+                        key = obj["key"]?.jsonPrimitive?.contentOrNull ?: "",
+                        name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                        detail = obj["detail"]?.jsonPrimitive?.contentOrNull ?: ""
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "解析 18+ 源站条目失败: ${e.message}")
+                    null
+                }
+            }.filter { it.key.isNotEmpty() }
+        }
+    }
+
+    /**
+     * 获取指定 18+ 源站的分类列表。
+     */
+    fun getAdultCategories(source: String): List<AdultCategory> {
+        val encoded = URLEncoder.encode(source, "UTF-8")
+        return get("/api/adult/categories?source=$encoded") { root ->
+            root.jsonArray.mapNotNull { element ->
+                try {
+                    val obj = element.jsonObject
+                    AdultCategory(
+                        typeId = obj["type_id"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null,
+                        typeName = obj["type_name"]?.jsonPrimitive?.contentOrNull ?: ""
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "解析 18+ 分类条目失败: ${e.message}")
+                    null
+                }
+            }
+        }
+    }
+
+    /**
+     * 获取指定 18+ 源站某分类的分页视频列表。
+     * @param typeId 传 null 表示全部分类
+     */
+    fun getAdultVideos(source: String, typeId: Int?, page: Int, size: Int): AdultVideoPage {
+        val encoded = URLEncoder.encode(source, "UTF-8")
+        val sb = StringBuilder("/api/adult/videos?source=$encoded")
+            .append("&page=").append(page.coerceAtLeast(1))
+            .append("&size=").append(size.coerceIn(1, 100))
+        if (typeId != null) {
+            sb.append("&type_id=").append(typeId)
+        }
+        return get(sb.toString()) { root ->
+            val list = (root["list"]?.jsonArray ?: JsonArray(emptyList())).mapNotNull { element ->
+                try {
+                    val obj = element.jsonObject
+                    AdultVideo(
+                        vodId = obj["vod_id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null,
+                        typeId = obj["type_id"]?.jsonPrimitive?.intOrNull ?: 0,
+                        typeName = obj["type_name"]?.jsonPrimitive?.contentOrNull ?: "",
+                        name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                        pic = obj["pic"]?.jsonPrimitive?.contentOrNull ?: "",
+                        remarks = obj["remarks"]?.jsonPrimitive?.contentOrNull ?: "",
+                        vodYear = obj["vod_year"]?.jsonPrimitive?.contentOrNull ?: ""
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "解析 18+ 视频条目失败: ${e.message}")
+                    null
+                }
+            }
+            AdultVideoPage(
+                list = list,
+                total = root["total"]?.jsonPrimitive?.intOrNull ?: 0,
+                page = root["page"]?.jsonPrimitive?.intOrNull ?: page,
+                size = root["size"]?.jsonPrimitive?.intOrNull ?: size
+            )
         }
     }
 

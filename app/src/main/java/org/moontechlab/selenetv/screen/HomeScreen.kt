@@ -43,6 +43,10 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
 
     var homeRefreshKey by remember { mutableIntStateOf(0) }
 
+    // [18+ Tab] 显隐状态：仅「已登录 且 服务端鉴权允许访问 18+ 源站」时为 true。
+    // 登录失效 / 未登录 / 无权限 / 本地模式 一律隐藏（查询失败按无权限处理）。
+    var showAdultTab by remember { mutableStateOf(false) }
+
     // 详情页作为覆盖层渲染（而非导航目的地），首页组合保持存活 → 数据与焦点不丢失。
     var detailEntry by remember { mutableStateOf<DetailEntry?>(null) }
 
@@ -61,6 +65,31 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                     homeRefreshKey++
                 }
             }
+    }
+
+    // [18+ Tab] 每次进入/返回首页（含登录、退出登录后）重新查询 18+ 权限。
+    // 未登录直接隐藏；已登录则走服务端 /api/adult/permission（401 会被当作无权限）。
+    LaunchedEffect(homeRefreshKey) {
+        showAdultTab = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                if (org.moontechlab.selenetv.service.AppDataService.isLocalModeSync() ||
+                    !org.moontechlab.selenetv.service.AppDataService.isLoggedInSync()
+                ) {
+                    false
+                } else {
+                    org.moontechlab.selenetv.service.ApiService.getAdultPermission().allowed
+                }
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    // 权限丢失（退出登录/登录失效）时若正停留在 18+ tab，强制回首页
+    LaunchedEffect(showAdultTab) {
+        if (!showAdultTab && selectedTabId == "adult") {
+            selectedTabId = "home"
+        }
     }
 
     // 返回目标由被点击的 VideoCard 自行记录（setTarget），保证 key 唯一且与匹配一致
@@ -84,6 +113,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
     val animeCategoryFocusRequester = remember { FocusRequester() }
     val showCategoryFocusRequester = remember { FocusRequester() }
     val liveFocusRequester = remember { FocusRequester() }
+    val adultFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
     
     // TabSwitcher 的 FocusRequester
@@ -218,6 +248,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
             header = {
                 TabSwitcher(
                     selectedTabId = selectedTabId,
+                    showAdultTab = showAdultTab,
                     onTabSelected = { tabId -> selectedTabId = tabId },
                     onNavigateDown = { currentTab ->
                         when (currentTab) {
@@ -228,6 +259,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                             "anime" -> animeCategoryFocusRequester.requestFocus()
                             "show" -> showCategoryFocusRequester.requestFocus()
                             "live" -> liveFocusRequester.requestFocus()
+                            "adult" -> adultFocusRequester.requestFocus()
                             "settings" -> settingsFocusRequester.requestFocus()
                         }
                     },
@@ -285,6 +317,11 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                     focusRequester = liveFocusRequester,
                     scrollState = scrollState,
                     onChannelClick = { liveLaunch = it },
+                )
+                "adult" -> AdultTab(
+                    focusRequester = adultFocusRequester,
+                    scrollState = scrollState,
+                    onVideoSelected = openDetail,
                 )
                 "settings" -> key(homeRefreshKey) {
                     SettingsTab(

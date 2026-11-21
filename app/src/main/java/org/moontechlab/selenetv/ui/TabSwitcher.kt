@@ -44,8 +44,9 @@ data class TabItem(
 
 /**
  * TV 应用顶部标签页切换器
- * 
+ *
  * @param selectedTabId 当前选中的标签页 ID
+ * @param showAdultTab 是否显示「18+」标签（仅登录且拥有 18+ 权限时为 true；缺省隐藏）
  * @param onTabSelected 标签页选中回调
  * @param onNavigateDown 向下导航回调（根据当前标签页）
  * @param onBackPressed 返回键回调
@@ -58,21 +59,26 @@ fun TabSwitcher(
     onNavigateDown: (String) -> Unit,
     onBackPressed: () -> Unit,
     modifier: Modifier = Modifier,
+    showAdultTab: Boolean = false,
     focusRequester: FocusRequester = remember { FocusRequester() },
     onFocusChanged: (Boolean) -> Unit = {}
 ) {
-    // 内置标签页列表
-    val tabs = remember {
-        listOf(
+    // 内置标签页列表（18+ 位于「直播」和「设置」之间，按权限动态出现）
+    val tabs = remember(showAdultTab) {
+        val base = mutableListOf(
             TabItem("search", "搜索", Icons.Default.Search, isIconOnly = true),
             TabItem("home", "首页", Icons.Default.Home),
             TabItem("movies", "电影", Icons.Default.Movie),
             TabItem("series", "剧集", Icons.Default.Tv),
             TabItem("anime", "动漫", Icons.Default.Pets),
             TabItem("show", "综艺", Icons.Default.Stars),
-            TabItem("live", "直播", Icons.Default.RadioButtonChecked),
-            TabItem("settings", "设置", Icons.Default.Settings)
+            TabItem("live", "直播", Icons.Default.RadioButtonChecked)
         )
+        if (showAdultTab) {
+            base.add(TabItem("adult", "18+", Icons.Default.Whatshot))
+        }
+        base.add(TabItem("settings", "设置", Icons.Default.Settings))
+        base.toList()
     }
     
     // 焦点请求器，用于控制初始焦点
