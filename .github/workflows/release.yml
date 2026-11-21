@@ -1,0 +1,77 @@
+name: Build & Publish Release APK
+
+# 手动触发的正式版（release）构建：assembleRelease（含 R8 混淆 + 资源收缩），
+# 发布到独立的 tag v{versionName}-release，与 debug 工作流的 tag v{versionName} 互不覆盖。
+#
+# 签名：仓库已提交 key.jks；在仓库 Settings → Secrets → Actions 配置
+#   RELEASE_SIGNING_PROPS_B64 = key.properties 文件内容的 base64
+#   （文件内容 4 行：storeFile=key.jks / storePassword=... / keyAlias=... / keyPassword=...，
+#     生成命令: base64 -w0 key.properties）
+# 配置后用稳定正式签名；未配置时按 build.gradle.kts 回退 debug 签名（可安装，非正式签名）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Restore signing key.properties from secrets
+        id: signing
+        env:
+          SIGNING_PROPS_B64: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
+        run: |
+          if [ -n "$SIGNING_PROPS_B64" ]; then
+            echo "$SIGNING_PROPS_B64" | base64 -d > key.properties
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+            echo "key.properties restored from secret (release signing)"
+          else
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+            echo "WARN: RELEASE_SIGNING_PROPS_B64 not set, falling back to debug signing"
+          fi
+
+      - name: Build release APKs
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Collect APKs
+        id: ver
+        run: |
+          set -e
+          VN=$(sed -n 's/.*versionName = "\(.*\)"/\1/p' app/build.gradle.kts | head -1)
+          VC=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+          echo "vn=$VN" >> "$GITHUB_OUTPUT"
+          echo "vc=$VC" >> "$GITHUB_OUTPUT"
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk "out/SeleneTV-v${VN}-arm64-v8a-release.apk"
+          cp app/build/outputs/apk/release/app-armeabi-v7a-release.apk "out/SeleneTV-v${VN}-armeabi-v7a-release.apk"
+          ls -l out
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          TAG="v${{ steps.ver.outputs.vn }}-release"
+          if [ "${{ steps.signing.outputs.signed }}" = "release" ]; then
+            SIGN_NOTE="正式签名 (key.jks)"
+          else
+            SIGN_NOTE="⚠️ 未配置 RELEASE_SIGNING_PROPS_B64，本次使用 debug 签名"
+          fi
+          gh release delete "$TAG" -y --cleanup-tag --repo "$REPO" 2>/dev/null || true
+          gh release create "$TAG" out/*.apk \
+            --repo "$REPO" \
+            --title "SeleneTV v${{ steps.ver.outputs.vn }} Release (versionCode ${{ steps.ver.outputs.vc }})" \
+            --notes "正式版构建 (run #${{ github.run_number }}, commit ${{ github.sha }})。签名：${SIGN_NOTE}" \
+            --latest=false
