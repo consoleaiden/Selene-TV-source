@@ -43,9 +43,14 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
 
     var homeRefreshKey by remember { mutableIntStateOf(0) }
 
-    // [18+ Tab] 显隐状态：仅「已登录 且 服务端鉴权允许访问 18+ 源站」时为 true。
+    // [18+ Tab] 显隐状态 = 服务端鉴权允许 且 设置页「显示 18+ 内容」开关开启。
     // 登录失效 / 未登录 / 无权限 / 本地模式 一律隐藏（查询失败按无权限处理）。
-    var showAdultTab by remember { mutableStateOf(false) }
+    // 设置开关即时生效：SettingsTab 切换时通过回调更新 adultContentEnabled。
+    var serverAdultAllowed by remember { mutableStateOf(false) }
+    var adultContentEnabled by remember {
+        mutableStateOf(org.moontechlab.selenetv.service.AppDataService.isAdultContentEnabledSync())
+    }
+    val showAdultTab by remember { derivedStateOf { serverAdultAllowed && adultContentEnabled } }
 
     // 详情页作为覆盖层渲染（而非导航目的地），首页组合保持存活 → 数据与焦点不丢失。
     var detailEntry by remember { mutableStateOf<DetailEntry?>(null) }
@@ -70,7 +75,7 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
     // [18+ Tab] 每次进入/返回首页（含登录、退出登录后）重新查询 18+ 权限。
     // 未登录直接隐藏；已登录则走服务端 /api/adult/permission（401 会被当作无权限）。
     LaunchedEffect(homeRefreshKey) {
-        showAdultTab = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        serverAdultAllowed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 if (org.moontechlab.selenetv.service.AppDataService.isLocalModeSync() ||
                     !org.moontechlab.selenetv.service.AppDataService.isLoggedInSync()
@@ -329,6 +334,9 @@ fun HomeScreen(navController: androidx.navigation.NavController) {
                         scrollState = scrollState,
                         onShowLoginScreen = {
                             navController.navigate(LoginRoute)
+                        },
+                        onAdultContentSettingChanged = { enabled ->
+                            adultContentEnabled = enabled
                         }
                     )
                 }

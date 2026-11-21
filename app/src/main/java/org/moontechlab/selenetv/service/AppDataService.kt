@@ -38,6 +38,7 @@ object AppDataService {
     private const val KEY_ADFILTER_PACK = "adfilter_pack"                // 服务端下发的规则包原文 JSON
     private const val KEY_ADFILTER_PACK_VERSION = "adfilter_pack_version" // 规则包版本号
     private const val KEY_ADFILTER_PULL_AT = "adfilter_pull_at"          // 上次拉取时间戳（TTL 防抖）
+    private const val KEY_ADULT_CONTENT_ENABLED = "adult_content_enabled" // 18+ 内容显示开关（默认开）
     private const val KEY_DANMAKU_ENABLED = "danmaku_enabled"   // 旧开关（仅迁移读）
     private const val KEY_DANMAKU_AREA = "danmaku_area"         // 显示区域：off/third/half/full（off=播放页暂时关闭）
     private const val KEY_DANMAKU_LAST_AREA = "danmaku_last_area" // 上次非 off 区域：弹幕「开关」一键开启时恢复到此
@@ -640,6 +641,18 @@ object AppDataService {
 
     fun setAdFilterEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_ADFILTER_ENABLED, enabled).apply()
+    }
+
+    // ==================== 18+ 内容显示开关（同步读写） ====================
+
+    /**
+     * 18+ 内容显示开关，默认开。控制首页是否显示 18+ tab。
+     * 仅在服务端鉴权已允许的前提下生效：关闭时即使有权限也隐藏 tab 与 18+ 源站内容。
+     */
+    fun isAdultContentEnabledSync(): Boolean = prefs.getBoolean(KEY_ADULT_CONTENT_ENABLED, true)
+
+    fun setAdultContentEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ADULT_CONTENT_ENABLED, enabled).apply()
     }
 
     /** 服务端下发的规则包原文（rules 对象 JSON）；空 = 用内置规则。 */

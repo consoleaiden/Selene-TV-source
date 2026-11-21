@@ -87,7 +87,9 @@ fun TabSwitcher(
     val focusRequesters = remember(tabs) { tabs.map { FocusRequester() } }
     
     // 获取当前选中 tab 的 FocusRequester，用于 focusRestorer
-    val selectedTabIndex = remember(selectedTabId) { tabs.indexOfFirst { it.id == selectedTabId } }
+    // remember 必须同时依赖 tabs：18+ 开关切换时 tabs 长度变化（9↔8），
+    // 若只依赖 selectedTabId 会拿到过期的索引 → focusRequesters 越界崩溃
+    val selectedTabIndex = remember(selectedTabId, tabs) { tabs.indexOfFirst { it.id == selectedTabId } }
     val selectedTabFocusRequester = if (selectedTabIndex >= 0) focusRequesters[selectedTabIndex] else focusRequesters[0]
     
     // 当前聚焦的标签 ID（用于自动切换逻辑）

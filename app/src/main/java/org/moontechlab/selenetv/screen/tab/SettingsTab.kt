@@ -103,7 +103,8 @@ private fun getPreferredIpAddress(): String? {
 fun SettingsTab(
     focusRequester: FocusRequester = remember { FocusRequester() },
     scrollState: ScrollState = rememberScrollState(),
-    onShowLoginScreen: () -> Unit = {}
+    onShowLoginScreen: () -> Unit = {},
+    onAdultContentSettingChanged: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -149,6 +150,10 @@ fun SettingsTab(
     // 去广告：开关显示值 + 规则状态行
     var adFilterEnabled by remember { mutableStateOf(true) }
     var adFilterStatus by remember { mutableStateOf("") }
+
+    // 18+ 内容显示开关：关闭后隐藏 18+ tab 与 18+ 源站内容（权限仍由服务端鉴权把关）
+    var adultContentEnabled by remember { mutableStateOf(AppDataService.isAdultContentEnabledSync()) }
+    val adultContentFocusRequester = remember { FocusRequester() }
 
     // 退出登录两步弹框（均由「登录实例」项触发）：
     // A 登录实例弹框（含单个退出登录按钮）→ B 二次确认弹框（取消 / 确认）
@@ -355,6 +360,24 @@ fun SettingsTab(
                     showDivider = false,
                     onClick = { showIpSelectDialog = true },
                     modifier = Modifier.focusRequester(ipSettingFocusRequester)
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // —— 内容 ——
+                SectionLabel("内容")
+                // 18+ 内容显示开关（点按切换）：关闭后首页隐藏 18+ tab；有权限时开启即恢复显示。
+                SettingRow(
+                    label = "显示 18+ 内容",
+                    value = if (adultContentEnabled) "开启" else "关闭",
+                    showDivider = false,
+                    onClick = {
+                        val next = !adultContentEnabled
+                        adultContentEnabled = next
+                        AppDataService.setAdultContentEnabled(next)
+                        onAdultContentSettingChanged(next)
+                    },
+                    modifier = Modifier.focusRequester(adultContentFocusRequester),
                 )
 
                 Spacer(modifier = Modifier.height(18.dp))
