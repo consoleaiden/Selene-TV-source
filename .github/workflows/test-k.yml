@@ -1,0 +1,16 @@
+name: Smoke Test K
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: New secret name SELENE_RELEASE_KEYSTORE_B64
+        env:
+          BAR: ${{ secrets.SELENE_RELEASE_KEYSTORE_B64 }}
+        run: echo "variant K ok"
