@@ -1,0 +1,17 @@
+name: Smoke Test C
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Env secrets test
+        env:
+          SIGNING_PROPS_B64: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
+          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: echo "variant C ok"
