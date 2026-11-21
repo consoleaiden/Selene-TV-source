@@ -1,0 +1,16 @@
+name: Smoke Test I
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only RELEASE_KEYSTORE_B64 after re-write
+        env:
+          BAR: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+        run: echo "variant I ok"
