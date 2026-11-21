@@ -3,11 +3,9 @@ name: Build & Publish Release APK
 # 手动触发的正式版（release）构建：assembleRelease（含 R8 混淆 + 资源收缩），
 # 发布到独立的 tag v{versionName}-release，与 debug 工作流的 tag v{versionName} 互不覆盖。
 #
-# 签名：在仓库 Settings → Secrets → Actions 配置两个 secret：
-#   RELEASE_KEYSTORE_B64          = release-key.jks 文件内容的 base64
-#   RELEASE_SIGNING_PROPS_B64     = key.properties 文件内容的 base64
-#     （内容 4 行：storeFile=release-key.jks / storePassword=... / keyAlias=... / keyPassword=...）
-# 配置后用稳定正式签名（可覆盖安装升级不丢数据）；未配置时回退 debug 签名。
+# 签名：release-key.jks.gpg（GPG AES256 对称加密后的密钥库，随仓库提交）+ secret
+#   RELEASE_KEYSTORE_PASSPHRASE = 解密密码（同时作为 keystore 密码）
+# 构建时解密出 release-key.jks 与 key.properties，用稳定正式签名（可覆盖安装升级不丢数据）。
 on:
   workflow_dispatch:
 
@@ -27,21 +25,16 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Restore signing keys from secrets
+      - name: Restore signing keys (gpg decrypt)
         id: signing
         env:
-          SIGNING_PROPS_B64: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
-          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          PASSPHRASE: ${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}
         run: |
-          if [ -n "$SIGNING_PROPS_B64" ] && [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > release-key.jks
-            echo "$SIGNING_PROPS_B64" | base64 -d > key.properties
-            echo "signed=release" >> "$GITHUB_OUTPUT"
-            echo "signing keys restored from secrets (stable release signing)"
-          else
-            echo "signed=debug" >> "$GITHUB_OUTPUT"
-            echo "WARN: RELEASE_KEYSTORE_B64 / RELEASE_SIGNING_PROPS_B64 not set, falling back to debug signing"
-          fi
+          set -e
+          gpg -d --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" release-key.jks.gpg > release-key.jks
+          printf 'storeFile=release-key.jks\nstorePassword=%s\nkeyAlias=selenetv\nkeyPassword=%s\n' "$PASSPHRASE" "$PASSPHRASE" > key.properties
+          echo "signed=release" >> "$GITHUB_OUTPUT"
+          echo "signing keys restored (stable release signing)"
 
       - name: Build release APKs
         run: ./gradlew assembleRelease --no-daemon --stacktrace
