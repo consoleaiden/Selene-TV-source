@@ -1,0 +1,16 @@
+name: Smoke Test D
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Env nonexistent secret
+        env:
+          FOO: ${{ secrets.TEST_SECRET_NOT_EXIST }}
+        run: echo "variant D ok"
