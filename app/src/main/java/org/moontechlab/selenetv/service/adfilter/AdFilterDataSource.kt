@@ -29,8 +29,12 @@ class AdFilterDataSource(private val up: DataSource) : DataSource {
 
     /** 包装既有 Factory；开关关闭时零开销直通（每次请求都会调用，运行中开关即时生效）。 */
     class Factory(private val base: DataSource.Factory) : DataSource.Factory {
+        /** 兜底开关：过滤后播放失败时由播放器置位，直连原始播放链接（不过滤）重试。 */
+        @Volatile
+        var bypass: Boolean = false
+
         override fun createDataSource(): DataSource {
-            if (!AppDataService.isAdFilterEnabledSync()) return base.createDataSource()
+            if (!AppDataService.isAdFilterEnabledSync() || bypass) return base.createDataSource()
             return AdFilterDataSource(base.createDataSource())
         }
     }

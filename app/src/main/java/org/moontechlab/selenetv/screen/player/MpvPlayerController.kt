@@ -3,6 +3,7 @@ package org.moontechlab.selenetv.screen.player
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.runtime.Composable
@@ -31,6 +32,8 @@ class MpvPlayerController(
     decodeMode: AppDataService.DecodeMode,
 ) : VideoPlayer, MPVLib.EventObserver {
 
+    private companion object { const val TAG = "Selene.MpvPlayer" }
+
     private val appContext: Context = context.applicationContext
 
     private val mpv: MPVLib = MPVLib.create(context)!!
@@ -48,6 +51,14 @@ class MpvPlayerController(
     // 这些变量只在主线程读写（doLoad 与 event 的 main.post 回调都在主线程）。
     private var fileActive = false
     private var pendingStopEndFiles = 0
+
+    // 兜底重试状态：去广告预过滤产物（本地 m3u8）播放失败时，降级为原始链接直连重试一次。
+    // 只在主线程读写。
+    private var currentOriginalUrl: String? = null   // 播放器收到的原始播放链接
+    private var currentFiltered = false              // 本次实际加载的是否为过滤后的本地文件
+    private var currentStartMs = 0L
+    private var currentPlayWhenReady = true
+    private var fallbackUsed = false
 
     override var positionMs by mutableLongStateOf(0L); private set
     override var durationMs by mutableLongStateOf(0L); private set
@@ -126,6 +137,14 @@ class MpvPlayerController(
             "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=2",
         )
 
+        // FFmpeg hls demuxer 的 protocol_whitelist：播放列表来自本地文件（去广告预过滤写盘）时，
+        // lavf 默认 whitelist 只含 file,crypto,data，https 分片请求被立即拒绝
+        // （"Protocol 'https' not on whitelist"）。显式放行本地文件 + https/http 链路。
+        // mpv 0.36 起选项更名 demuxer-lavf-* -> demux-lavf-*，两个名字都设以兼容。
+        val lavfWhitelist = "protocol_whitelist=file,crypto,data,http,https,tcp,tls,httpproxy"
+        mpv.setOptionString("demux-lavf-o", lavfWhitelist)
+        mpv.setOptionString("demuxer-lavf-o", lavfWhitelist)
+
         mpv.init()
         mpv.observeProperty("time-pos", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
         mpv.observeProperty("duration", MPVLib.MpvFormat.MPV_FORMAT_DOUBLE)
@@ -144,6 +163,11 @@ class MpvPlayerController(
         // 这里在开始载入时主动置 true（等价于 ExoPlayer prepare() 触发的 STATE_BUFFERING），
         // 让加载月牙立即出现，避免首帧前一段纯黑无反馈；首帧到达（time-pos>0）时清掉。
         isBuffering = true
+        // 新的一次播放：重置兜底状态，并记录原始链接供降级重试
+        fallbackUsed = false
+        currentOriginalUrl = url
+        currentStartMs = startMs
+        currentPlayWhenReady = playWhenReady
         prepareAndLoad(url, startMs, playWhenReady)
     }
 
@@ -155,21 +179,32 @@ class MpvPlayerController(
     private fun prepareAndLoad(url: String, startMs: Long, playWhenReady: Boolean) {
         MpvAdFilterPrep.prepare(appContext, url) { finalUrl ->
             main.post {
-                if (!released) doLoad(finalUrl, startMs, playWhenReady)
+                if (!released) doLoad(finalUrl, startMs, playWhenReady, filtered = finalUrl != url)
             }
         }
     }
 
-    private fun doLoad(url: String, startMs: Long, playWhenReady: Boolean) {
+    private fun doLoad(url: String, startMs: Long, playWhenReady: Boolean, filtered: Boolean = false) {
+        currentFiltered = filtered
         // 若已有文件在播，replace 会先给旧文件发一个 END_FILE(stop)，需忽略，避免误判为新源加载失败。
         if (fileActive) pendingStopEndFiles++
         fileActive = true
         val startSec = (startMs / 1000.0).coerceAtLeast(0.0)
+        // m3u8 必须强制走 libavformat 的 HLS demuxer（per-file option demuxer=lavf）：
+        // 否则 mpv 按 .m3u8 扩展名直接选用内置 demux_playlist（跳过内容探测），把 HLS
+        // 播放列表逐分片当独立文件播放——每个 ~3s 分片单独 demux、播完 EOF 跳下一个，
+        // 观感为「几秒画面反复播放」；且任一分片起播失败会在 hasStarted=false 时置 error，
+        // 「此源播放失败」横幅常驻。demuxer=lavf 后由 lavf probe 识别为 hls，正常连续播放。
+        val isHls = url.lowercase().contains(".m3u8")
+        val opts = buildString {
+            if (isHls) append("demuxer=lavf")
+            if (startSec > 0) { if (isNotEmpty()) append(","); append("start=$startSec") }
+        }
         // loadfile 语法：loadfile <url> [<flags> [<index> [<options>]]]。
         // start 是 option，必须放在第 4 个位置（index 之后）；放在 index 位会被当成整数解析失败、
         // 导致整条 loadfile 被拒、什么都不播（黑屏）。start=0 时不传 option。
-        if (startSec > 0) {
-            mpv.command(arrayOf("loadfile", url, "replace", "0", "start=$startSec"))
+        if (opts.isNotEmpty()) {
+            mpv.command(arrayOf("loadfile", url, "replace", "0", opts))
         } else {
             mpv.command(arrayOf("loadfile", url, "replace"))
         }
@@ -240,7 +275,19 @@ class MpvPlayerController(
             if (pendingStopEndFiles > 0) { pendingStopEndFiles--; return@post }
             fileActive = false
             // 走到这里是「新文件」自己结束：未起播过即视为加载失败（死链/无法解码）。
-            if (!hasStarted) error = "mpv: playback failed"
+            // 兜底：本次加载的是去广告过滤后的本地播放列表时，降级为原始链接直连重试一次；
+            // 仍失败才报「播放失败」（避免过滤产物异常导致可播内容无法观看）。
+            if (!hasStarted) {
+                val orig = currentOriginalUrl
+                if (!fallbackUsed && currentFiltered && orig != null) {
+                    fallbackUsed = true
+                    Log.w(TAG, "过滤后播放列表播放失败，降级原始链接直连重试")
+                    isBuffering = true
+                    doLoad(orig, currentStartMs, currentPlayWhenReady, filtered = false)
+                    return@post
+                }
+                error = "mpv: playback failed"
+            }
         }
     }
 

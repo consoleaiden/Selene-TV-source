@@ -5,7 +5,6 @@ import android.net.Uri
 import android.util.Log
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.MediaHttp
-import java.io.File
 import java.net.URI
 import java.nio.charset.StandardCharsets
 
@@ -13,11 +12,11 @@ import java.nio.charset.StandardCharsets
  * MPV 内核去广告预处理。
  *
  * MPV 走 libmpv 自己的 demuxer，无法像 ExoPlayer 那样在 DataSource 层拦截响应体，
- * 故采用「预取播放列表 → 端上过滤 → 绝对化 URL 写本地文件 → loadfile 本地文件」：
+ * 故采用「预取播放列表 → 端上过滤 → 绝对化 URL → 本机回环 HTTP 提供 → loadfile 本地 URL」：
  *  - 开关关闭 / 非 m3u8 → 直接回调原始 URL，零开销；
  *  - master 列表自动跟一层 variant 再过滤（HlsAdFilter 本身拒绝 master）；
  *  - 任何一步失败 → 回调原始 URL（fail-open，广告过滤永远不影响播放）；
- *  - 过滤生效后分片 URL 全部绝对化（本地文件无法解析相对路径）。
+ *  - 过滤生效后分片 URL 全部绝对化（跨目录/跨 CDN 分片需绝对 URL）。
  *
  * 注意：过滤后时间轴与原片不同（广告被删），传入的起播位置在 MPV 侧直接作用于
  * 过滤后的时间轴——续播位置可能略有偏移，可接受（起播位置主要来自记忆播放）。
@@ -27,20 +26,19 @@ object MpvAdFilterPrep {
     private const val TIMEOUT_MS = 12_000
     private const val UA = "AptvPlayer/1.4.10"
 
-    private val cacheFile = arrayOf<File?>(null)
 
     /**
-     * 异步预处理播放地址，完成后在回调线程回调最终 URL（可能是本地文件路径）。
+     * 异步预处理播放地址，完成后在回调线程回调最终 URL（可能是本机回环 HTTP 地址）。
      * 回调不保证线程；调用方自行 main.post。
      */
-    fun prepare(context: Context, url: String, onReady: (String) -> Unit) {
+    fun prepare(@Suppress("UNUSED_PARAMETER") context: Context, url: String, onReady: (String) -> Unit) {
         // 非 HLS 或开关关闭：不预取，直接放行（与 DataSource 直通语义一致）。
         if (!url.lowercase().contains(".m3u8") || !AppDataService.isAdFilterEnabledSync()) {
             onReady(url)
             return
         }
         Thread({
-            val final = try { prep(context, url) } catch (e: Throwable) {
+            val final = try { prep(url) } catch (e: Throwable) {
                 Log.w(TAG, "mpv prep fail -> passthrough: ${e.message}")
                 url
             }
@@ -48,7 +46,7 @@ object MpvAdFilterPrep {
         }, "mpv-adfilter-prep").apply { isDaemon = true }.start()
     }
 
-    private fun prep(context: Context, url: String): String {
+    private fun prep(url: String): String {
         var target = url
         var text = fetch(target) ?: return url
         // master 列表：跟第一层 variant 后再过滤（HlsAdFilter 对 master fail-open）。
@@ -62,10 +60,11 @@ object MpvAdFilterPrep {
         val filtered = AdFilter.filter(Uri.parse(target), text.toByteArray(StandardCharsets.UTF_8))
             ?: return url  // 直播流/无广告/规则拒绝等，一律原样播放
         val out = absolutize(target, String(filtered, StandardCharsets.UTF_8))
-        val file = cacheFile[0] ?: File(context.cacheDir, "mpv_adfilter.m3u8").also { cacheFile[0] = it }
-        file.writeText(out, StandardCharsets.UTF_8)
-        Log.d(TAG, "mpv prep ok: ${file.length()}B url=${target.substringBefore('?')}")
-        return file.absolutePath
+        // 不写本地文件：mpv 对本地路径输入会强制 protocol_whitelist=file,crypto,data，
+        // HLS demuxer 取 https 分片会被 lavf 直接拒绝。改由本机回环 HTTP 提供播放列表。
+        val localUrl = MpvPlaylistServer.publish(out) ?: return url
+        Log.d(TAG, "mpv prep ok: ${out.length}B url=${target.substringBefore('?')}")
+        return localUrl
     }
 
     /** 过滤后播放列表的分片 URL 绝对化（注释/头行原样保留）。 */

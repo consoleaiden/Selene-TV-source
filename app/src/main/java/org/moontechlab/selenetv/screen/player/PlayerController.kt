@@ -30,6 +30,17 @@ class PlayerController(
     decodeMode: AppDataService.DecodeMode = AppDataService.DecodeMode.HARDWARE,
 ) : VideoPlayer {
 
+    private companion object { const val TAG = "Selene.ExoPlayer" }
+
+    /** 若传入的工厂是去广告工厂，保留引用以便兜底时置 bypass 直连原始链接。 */
+    private val adFilterFactory = dataSourceFactory as? org.moontechlab.selenetv.service.adfilter.AdFilterDataSource.Factory
+
+    // 兜底重试状态：过滤生效时若播放失败，跳过过滤用原始链接直连重试一次
+    private var lastLoadUrl: String? = null
+    private var lastLoadPos = 0L
+    private var lastLoadAuto = false
+    private var fallbackUsed = false
+
     private val exo: ExoPlayer = ExoPlayer.Builder(context)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
         .apply {
@@ -92,15 +103,38 @@ class PlayerController(
             if (state == Player.STATE_READY) { hasStarted = true; val d = exo.duration; if (d > 0) durationMs = d }
             if (state == Player.STATE_ENDED) onEnded()
         }
-        override fun onPlayerError(e: PlaybackException) { error = e.errorCodeName }
+        override fun onPlayerError(e: PlaybackException) {
+            // 兜底：广告过滤后播放失败 → 置 bypass 直连原始链接重试一次；仍失败才报错。
+            val url = lastLoadUrl
+            val f = adFilterFactory
+            if (url != null && f != null && !fallbackUsed && !f.bypass) {
+                fallbackUsed = true
+                f.bypass = true
+                android.util.Log.w(TAG, "播放失败(${e.errorCodeName})，跳过广告过滤直连原始链接重试")
+                loadInternal(url, lastLoadPos, lastLoadAuto)
+                return
+            }
+            error = e.errorCodeName
+        }
     }
 
     init { exo.addListener(listener) }
 
     @MainThread
     override fun load(url: String, startMs: Long, playWhenReady: Boolean) {
+        // 新的一次播放：重置兜底状态（过滤恢复生效）
+        fallbackUsed = false
+        adFilterFactory?.bypass = false
+        loadInternal(url, startMs, playWhenReady)
+    }
+
+    @MainThread
+    private fun loadInternal(url: String, startMs: Long, playWhenReady: Boolean) {
         error = null
         hasStarted = false
+        lastLoadUrl = url
+        lastLoadPos = startMs
+        lastLoadAuto = playWhenReady
         exo.setMediaItem(MediaItem.fromUri(url))
         exo.prepare()
         if (startMs > 0) exo.seekTo(startMs)
