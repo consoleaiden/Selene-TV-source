@@ -1,1 +1,9 @@
-key.jks key.properties release-key.jks
+# 签名相关：稳定签名密钥库与配置不入库（CI 用 release-key.jks.gpg + secrets 注入）
+key.jks
+key.properties
+release-key.jks
+
+# 本地构建产物
+.gradle/
+build.log
+local.properties
