@@ -34,6 +34,10 @@ object AppDataService {
     private const val KEY_IS_LOCAL_MODE = "is_local_mode"
     private const val KEY_SKIPPED_VERSION = "skipped_version"
     private const val KEY_UPDATE_POSTPONED_UNTIL = "update_postponed_until"
+    private const val KEY_ADFILTER_ENABLED = "adfilter_enabled"          // 播放器去广告开关（默认开）
+    private const val KEY_ADFILTER_PACK = "adfilter_pack"                // 服务端下发的规则包原文 JSON
+    private const val KEY_ADFILTER_PACK_VERSION = "adfilter_pack_version" // 规则包版本号
+    private const val KEY_ADFILTER_PULL_AT = "adfilter_pull_at"          // 上次拉取时间戳（TTL 防抖）
     private const val KEY_DANMAKU_ENABLED = "danmaku_enabled"   // 旧开关（仅迁移读）
     private const val KEY_DANMAKU_AREA = "danmaku_area"         // 显示区域：off/third/half/full（off=播放页暂时关闭）
     private const val KEY_DANMAKU_LAST_AREA = "danmaku_last_area" // 上次非 off 区域：弹幕「开关」一键开启时恢复到此
@@ -628,6 +632,33 @@ object AppDataService {
      * 同步检查是否已登录
      */
     fun isLoggedInSync(): Boolean = prefs.getBoolean(KEY_HAS_LOGIN, false)
+
+    // ==================== 播放器去广告（同步读写） ====================
+
+    /** 去广告开关，默认开。DataSource.Factory 每次请求都读，运行中切换即时生效。 */
+    fun isAdFilterEnabledSync(): Boolean = prefs.getBoolean(KEY_ADFILTER_ENABLED, true)
+
+    fun setAdFilterEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ADFILTER_ENABLED, enabled).apply()
+    }
+
+    /** 服务端下发的规则包原文（rules 对象 JSON）；空 = 用内置规则。 */
+    fun getAdFilterPackSync(): String? = prefs.getString(KEY_ADFILTER_PACK, null)
+
+    fun setAdFilterPack(packJson: String, version: Int) {
+        prefs.edit()
+            .putString(KEY_ADFILTER_PACK, packJson)
+            .putInt(KEY_ADFILTER_PACK_VERSION, version)
+            .apply()
+    }
+
+    fun getAdFilterPackVersionSync(): Int = prefs.getInt(KEY_ADFILTER_PACK_VERSION, 0)
+
+    fun getAdFilterPullAtSync(): Long = prefs.getLong(KEY_ADFILTER_PULL_AT, 0L)
+
+    fun setAdFilterPullAt(at: Long) {
+        prefs.edit().putLong(KEY_ADFILTER_PULL_AT, at).apply()
+    }
 
     /**
      * 同步获取豆瓣数据源 Key

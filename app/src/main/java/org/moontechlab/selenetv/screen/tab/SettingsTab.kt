@@ -50,6 +50,7 @@ import org.moontechlab.selenetv.service.DoubanCacheService
 import org.moontechlab.selenetv.service.SearchCacheService
 import org.moontechlab.selenetv.service.SubscriptionService
 import org.moontechlab.selenetv.service.UpdateService
+import org.moontechlab.selenetv.service.adfilter.AdFilter
 import qrcode.QRCode
 import java.net.NetworkInterface
 import org.moontechlab.selenetv.ui.AnimatedSelectDialog
@@ -143,6 +144,11 @@ fun SettingsTab(
     var showPlayerTypeDialog by remember { mutableStateOf(false) }
     var showDecodeModeDialog by remember { mutableStateOf(false) }
     var showSearchOriginDialog by remember { mutableStateOf(false) }
+    var showAdFilterDialog by remember { mutableStateOf(false) }
+
+    // 去广告：开关显示值 + 规则状态行
+    var adFilterEnabled by remember { mutableStateOf(true) }
+    var adFilterStatus by remember { mutableStateOf("") }
 
     // 退出登录两步弹框（均由「登录实例」项触发）：
     // A 登录实例弹框（含单个退出登录按钮）→ B 二次确认弹框（取消 / 确认）
@@ -165,6 +171,7 @@ fun SettingsTab(
     val bangumiImageSourceFocusRequester = remember { FocusRequester() }
     val tmdbApiKeyFocusRequester = remember { FocusRequester() }
     val m3u8ProxyFocusRequester = remember { FocusRequester() }
+    val adFilterFocusRequester = remember { FocusRequester() }
 
     // 输入弹框状态
     var showTmdbApiKeyDialog by remember { mutableStateOf(false) }
@@ -227,6 +234,8 @@ fun SettingsTab(
         playerType = AppDataService.getPlayerTypeDisplayName()
         decodeMode = AppDataService.getDecodeModeDisplayName()
         searchOrigin = AppDataService.getSearchOriginDisplayName()
+        adFilterEnabled = AppDataService.isAdFilterEnabledSync()
+        adFilterStatus = AdFilter.statusLine()
         // 加载可用 IP 列表（网络接口枚举可能阻塞，放到 IO 线程）
         val ips = withContext(Dispatchers.IO) { getAllIpAddresses() }
         availableIps = ips
@@ -375,6 +384,14 @@ fun SettingsTab(
                     value = bangumiImageSource.ifEmpty { "直连" },
                     onClick = { showBangumiImageSourceDialog = true },
                     modifier = Modifier.focusRequester(bangumiImageSourceFocusRequester)
+                )
+                // 播放器去广告（ExoPlayer 拦截响应体 / MPV 预取过滤，双内核生效）
+                SettingRow(
+                    label = "播放器去广告",
+                    value = (if (adFilterEnabled) "开启" else "关闭") +
+                        " · ${adFilterStatus.removePrefix("规则：")}",
+                    onClick = { showAdFilterDialog = true },
+                    modifier = Modifier.focusRequester(adFilterFocusRequester)
                 )
                 // TMDB API Key（填写后详情页可拉取剧照/ logo 渲染 Apple TV 式 hero）
                 SettingRow(
@@ -603,6 +620,46 @@ fun SettingsTab(
                     AppDataService.saveBangumiImageSource(displayName)
                     bangumiImageSource = displayName
                 }
+                onClose()
+            },
+            onDismiss = onClose
+        )
+    }
+
+    // 播放器去广告设置弹框（开 / 关 / 立即刷新服务端规则）
+    AnimatedSelectDialog(
+        visible = showAdFilterDialog,
+        onDismiss = { showAdFilterDialog = false },
+        onClosed = { adFilterFocusRequester.requestFocus() }
+    ) { onClose ->
+        SourceSelectDialogContent(
+            title = "播放器去广告",
+            options = listOf(
+                if (adFilterEnabled) "开启（当前）" else "开启",
+                if (!adFilterEnabled) "关闭（当前）" else "关闭",
+                "立即刷新规则包",
+            ),
+            currentValue = "",
+            onSelected = { picked ->
+                when {
+                    picked.startsWith("开启") -> {
+                        AppDataService.setAdFilterEnabled(true)
+                        adFilterEnabled = true
+                        AdFilter.reloadRules()
+                    }
+                    picked.startsWith("关闭") -> {
+                        AppDataService.setAdFilterEnabled(false)
+                        adFilterEnabled = false
+                    }
+                    picked.startsWith("立即刷新") -> {
+                        // 同步拉取（IO 线程），完成后再刷新状态行，避免显示滞后
+                        coroutineScope.launch(Dispatchers.IO) {
+                            AdFilter.refreshNowSync()
+                            adFilterStatus = AdFilter.statusLine()
+                        }
+                    }
+                }
+                adFilterStatus = AdFilter.statusLine()
                 onClose()
             },
             onDismiss = onClose

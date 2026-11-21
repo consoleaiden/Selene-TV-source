@@ -6,6 +6,8 @@ import androidx.media3.datasource.DataSource
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.AppDataService.PlayerType
 import org.moontechlab.selenetv.service.MediaHttp
+import org.moontechlab.selenetv.service.adfilter.AdFilter
+import org.moontechlab.selenetv.service.adfilter.AdFilterDataSource
 
 /** libmpv 要求 API 26+；低于 26 时把 MPV 降级为 ExoPlayer（.so 永不加载）。 */
 const val MPV_MIN_SDK = 26
@@ -23,8 +25,13 @@ object PlayerFactory {
         val decode = AppDataService.getDecodeModeSync()
         val type = resolveEffectivePlayerType(AppDataService.getPlayerTypeSync(), Build.VERSION.SDK_INT)
         fun exo(): VideoPlayer {
-            val ds: DataSource.Factory =
+            val base: DataSource.Factory =
                 if (userAgent != null) MediaHttp.dataSourceFactory(userAgent) else MediaHttp.dataSourceFactory
+            // 去广告：包一层 DataSource 工厂，仅对 .m3u8 响应体原位重写；开关关闭时零开销直通。
+            // 直播源也走这里，但 HlsAdFilter 对无 ENDLIST 的直播流 fail-open 原样放行。
+            val ds: DataSource.Factory = AdFilterDataSource.Factory(base)
+            // 起播触发规则包保鲜（TTL 30min，失败静默）。
+            AdFilter.ensureFresh()
             return PlayerController(context, ds, decode)
         }
         return when (type) {

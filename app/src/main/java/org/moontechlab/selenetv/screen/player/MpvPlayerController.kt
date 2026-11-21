@@ -15,6 +15,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import dev.jdtech.mpv.MPVLib
 import org.moontechlab.selenetv.service.AppDataService
 import org.moontechlab.selenetv.service.MediaHttp
+import org.moontechlab.selenetv.service.adfilter.MpvAdFilterPrep
 
 /**
  * 基于 libmpv 的 VideoPlayer 实现。仅在 API>=26 由 PlayerFactory 构造。
@@ -29,6 +30,8 @@ class MpvPlayerController(
     userAgent: String?,
     decodeMode: AppDataService.DecodeMode,
 ) : VideoPlayer, MPVLib.EventObserver {
+
+    private val appContext: Context = context.applicationContext
 
     private val mpv: MPVLib = MPVLib.create(context)!!
 
@@ -141,12 +144,20 @@ class MpvPlayerController(
         // 这里在开始载入时主动置 true（等价于 ExoPlayer prepare() 触发的 STATE_BUFFERING），
         // 让加载月牙立即出现，避免首帧前一段纯黑无反馈；首帧到达（time-pos>0）时清掉。
         isBuffering = true
-        if (!surfaceAttached) {
-            pendingUrl = url; pendingStartMs = startMs
-            pendingPlayWhenReady = playWhenReady
-            return
+        prepareAndLoad(url, startMs, playWhenReady)
+    }
+
+    /**
+     * 去广告预处理（MPV 无 DataSource 拦截层，走预取过滤）：
+     * 非 m3u8 / 开关关闭时回调即原 URL，零额外开销；过滤成功则回调本地过滤文件路径。
+     * 结果 main.post 回主线程，保证 mpv 调用仍只在主线程发生。
+     */
+    private fun prepareAndLoad(url: String, startMs: Long, playWhenReady: Boolean) {
+        MpvAdFilterPrep.prepare(appContext, url) { finalUrl ->
+            main.post {
+                if (!released) doLoad(finalUrl, startMs, playWhenReady)
+            }
         }
-        doLoad(url, startMs, playWhenReady)
     }
 
     private fun doLoad(url: String, startMs: Long, playWhenReady: Boolean) {
@@ -245,7 +256,7 @@ class MpvPlayerController(
                             mpv.setOptionString("force-window", "yes")
                             mpv.setPropertyString("vo", "gpu")
                             surfaceAttached = true
-                            pendingUrl?.let { doLoad(it, pendingStartMs, pendingPlayWhenReady); pendingUrl = null }
+                            pendingUrl?.let { prepareAndLoad(it, pendingStartMs, pendingPlayWhenReady); pendingUrl = null }
                         }
                         override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) {
                             if (released) return
