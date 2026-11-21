@@ -501,43 +501,39 @@ object ApiService {
 
     /**
      * 获取 18+ 源站列表（形状与搜索资源对齐）。
+     * 注意：端点返回裸 JSON 数组，须走裸文本解析（get() 只支持 JsonObject）。
      */
     fun getAdultSources(): List<AdultSource> {
-        return get("/api/adult/sources") { root ->
-            root.jsonArray.mapNotNull { element ->
-                try {
-                    val obj = element.jsonObject
-                    AdultSource(
-                        key = obj["key"]?.jsonPrimitive?.contentOrNull ?: "",
-                        name = obj["name"]?.jsonPrimitive?.contentOrNull ?: "",
-                        detail = obj["detail"]?.jsonPrimitive?.contentOrNull ?: ""
-                    )
-                } catch (e: Exception) {
-                    Log.w(TAG, "解析 18+ 源站条目失败: ${e.message}")
-                    null
-                }
-            }.filter { it.key.isNotEmpty() }
+        val url = buildUrl("/api/adult/sources")
+        val connection = createConnection(url, "GET")
+        return try {
+            val responseText = connection.inputStream.bufferedReader().use(BufferedReader::readText)
+            json.decodeFromString<List<AdultSource>>(responseText)
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw ApiException("响应数据解析失败: ${e.message}", -1)
+        } finally {
+            connection.disconnect()
         }
     }
 
     /**
-     * 获取指定 18+ 源站的分类列表。
+     * 获取指定 18+ 源站的分类列表（裸 JSON 数组，走裸文本解析）。
      */
     fun getAdultCategories(source: String): List<AdultCategory> {
         val encoded = URLEncoder.encode(source, "UTF-8")
-        return get("/api/adult/categories?source=$encoded") { root ->
-            root.jsonArray.mapNotNull { element ->
-                try {
-                    val obj = element.jsonObject
-                    AdultCategory(
-                        typeId = obj["type_id"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null,
-                        typeName = obj["type_name"]?.jsonPrimitive?.contentOrNull ?: ""
-                    )
-                } catch (e: Exception) {
-                    Log.w(TAG, "解析 18+ 分类条目失败: ${e.message}")
-                    null
-                }
-            }
+        val url = buildUrl("/api/adult/categories?source=$encoded")
+        val connection = createConnection(url, "GET")
+        return try {
+            val responseText = connection.inputStream.bufferedReader().use(BufferedReader::readText)
+            json.decodeFromString<List<AdultCategory>>(responseText)
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: Exception) {
+            throw ApiException("响应数据解析失败: ${e.message}", -1)
+        } finally {
+            connection.disconnect()
         }
     }
 

@@ -23,7 +23,9 @@ import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.moontechlab.selenetv.model.AdultCategory
 import org.moontechlab.selenetv.model.AdultSource
 import org.moontechlab.selenetv.model.AdultVideo
@@ -103,13 +105,14 @@ fun AdultTab(
     }
 
     // 加载源站列表并默认选中第一个
+    // 注意：ApiService 是阻塞式 HTTP（必须 IO 线程），rememberCoroutineScope 在主线程
     fun loadSourcesAndInit() {
         if (sourcesLoading) return
         coroutineScope.launch {
             sourcesLoading = true
             errorMessage = null
             try {
-                val list = ApiService.getAdultSources()
+                val list = withContext(Dispatchers.IO) { ApiService.getAdultSources() }
                 sources = list
                 sourcesLoading = false
                 if (list.isEmpty()) {
@@ -125,30 +128,34 @@ fun AdultTab(
         }
     }
 
-    // 切换源站：刷新分类列表并选中第一个分类（视频列表由下方 Effect 联动加载）
+    // 切换源站：仅更新选中源站，分类/视频的加载由下方 Effect 联动完成
     fun switchSource(key: String) {
         val src = sources.firstOrNull { it.key == key } ?: return
         selectedSource = src
+    }
+
+    // 源站变化（含进入 tab 首次选中）：重置并加载该源站的分类列表，选中第一个分类
+    // 视频列表由再下方的 Effect（selectedCategoryId 变化）联动加载
+    LaunchedEffect(selectedSource?.key) {
+        val src = selectedSource ?: return@LaunchedEffect
         categories = emptyList()
         selectedCategoryId = null
         videos = emptyList()
         page = 1
         total = 0
         hasMore = false
-        coroutineScope.launch {
-            try {
-                val cats = ApiService.getAdultCategories(key)
-                categories = cats
-                if (cats.isEmpty()) {
-                    errorMessage = "该源站暂无分类数据"
-                } else {
-                    errorMessage = null
-                    selectedCategoryId = cats.first().typeId
-                }
-            } catch (e: Exception) {
-                errorMessage = e.message ?: "加载分类失败"
-                Log.e(TAG, "加载分类失败: $key", e)
+        try {
+            val cats = withContext(Dispatchers.IO) { ApiService.getAdultCategories(src.key) }
+            categories = cats
+            if (cats.isEmpty()) {
+                errorMessage = "该源站暂无分类数据"
+            } else {
+                errorMessage = null
+                selectedCategoryId = cats.first().typeId
             }
+        } catch (e: Exception) {
+            errorMessage = e.message ?: "加载分类失败"
+            Log.e(TAG, "加载分类失败: ${src.key}", e)
         }
     }
 
@@ -162,7 +169,9 @@ fun AdultTab(
         videosLoading = true
         errorMessage = null
         try {
-            val resp = ApiService.getAdultVideos(src.key, selectedCategoryId, 1, PAGE_LIMIT)
+            val resp = withContext(Dispatchers.IO) {
+                ApiService.getAdultVideos(src.key, selectedCategoryId, 1, PAGE_LIMIT)
+            }
             videos = resp.list
             total = resp.total
             page = 2
@@ -182,7 +191,9 @@ fun AdultTab(
         coroutineScope.launch {
             videosLoading = true
             try {
-                val resp = ApiService.getAdultVideos(src.key, selectedCategoryId, page, PAGE_LIMIT)
+                val resp = withContext(Dispatchers.IO) {
+                    ApiService.getAdultVideos(src.key, selectedCategoryId, page, PAGE_LIMIT)
+                }
                 videos = videos + resp.list
                 total = resp.total
                 page += 1
@@ -233,10 +244,19 @@ fun AdultTab(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             // 「源站列表」按钮：进入 tab 的首个焦点目标
+                            // DOWN：有分类时移到分类行；无分类时不消费事件，
+                            // 让焦点自然落到下方网格（如错误态的「重试」按钮）
                             SourceListButton(
-                                onClick = { showSourceDialog = true },
+                                onClick = {
+                                    if (sources.isNotEmpty()) showSourceDialog = true
+                                },
                                 modifier = Modifier.focusRequester(focusRequester),
-                                onNavigateDown = { tryRequest(categoriesFocusRequester) }
+                                onNavigateDown = {
+                                    if (categories.isNotEmpty()) {
+                                        tryRequest(categoriesFocusRequester)
+                                        true
+                                    } else false
+                                }
                             )
 
                             // 按钮后面：当前源站的分类列表
@@ -288,7 +308,7 @@ fun AdultTab(
 private fun SourceListButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    onNavigateDown: () -> Unit = {}
+    onNavigateDown: () -> Boolean = { false }
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
@@ -299,10 +319,7 @@ private fun SourceListButton(
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
-                        Key.DirectionDown, Key.NavigateNext -> {
-                            onNavigateDown()
-                            true
-                        }
+                        Key.DirectionDown, Key.NavigateNext -> onNavigateDown()
                         Key.DirectionUp, Key.NavigatePrevious -> true // 边界陷阱
                         else -> false
                     }

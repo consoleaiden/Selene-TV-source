@@ -82,7 +82,9 @@ fun TabSwitcher(
     }
     
     // 焦点请求器，用于控制初始焦点
-    val focusRequesters = remember { tabs.map { FocusRequester() } }
+    // 注意必须随 tabs 变化重建：18+ 权限异步到位后 tabs 从 8 → 9，
+    // 若沿用旧数组会 IndexOutOfBoundsException（与 tabs 长度不一致）
+    val focusRequesters = remember(tabs) { tabs.map { FocusRequester() } }
     
     // 获取当前选中 tab 的 FocusRequester，用于 focusRestorer
     val selectedTabIndex = remember(selectedTabId) { tabs.indexOfFirst { it.id == selectedTabId } }

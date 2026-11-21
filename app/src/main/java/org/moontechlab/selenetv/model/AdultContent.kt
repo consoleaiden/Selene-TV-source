@@ -1,5 +1,8 @@
 package org.moontechlab.selenetv.model
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+
 /**
  * [18+ Tab] 服务端 18+ 频道相关数据模型。
  *
@@ -9,6 +12,7 @@ package org.moontechlab.selenetv.model
  *   GET /api/adult/categories?source=    -> List<AdultCategory>
  *   GET /api/adult/videos?source=&type_id=&page=&size= -> AdultVideoPage
  */
+@Serializable
 data class AdultPermission(
     val allowed: Boolean
 )
@@ -16,6 +20,7 @@ data class AdultPermission(
 /**
  * 18+ 源站（形状与 SearchResource 对齐：key/api/name/detail）。
  */
+@Serializable
 data class AdultSource(
     val key: String,
     val name: String,
@@ -23,24 +28,26 @@ data class AdultSource(
 )
 
 /**
- * 单源分类（type_id 即筛选 key）。
+ * 单源分类（type_id 即筛选 key，服务端为 snake_case）。
  */
+@Serializable
 data class AdultCategory(
-    val typeId: Int,
-    val typeName: String
+    @SerialName("type_id") val typeId: Int,
+    @SerialName("type_name") val typeName: String
 )
 
 /**
  * 视频网格瘦行（不含 content/play_url，播放信息走 /api/detail 按需获取）。
  */
+@Serializable
 data class AdultVideo(
-    val vodId: Long,
-    val typeId: Int,
-    val typeName: String,
+    @SerialName("vod_id") val vodId: Long,
+    @SerialName("type_id") val typeId: Int,
+    @SerialName("type_name") val typeName: String,
     val name: String,
     val pic: String,
     val remarks: String,
-    val vodYear: String
+    @SerialName("vod_year") val vodYear: String
 ) {
     /** 转成通用卡片模型：source+vodId 走既有详情页（History 入口）。 */
     fun toVideoInfo(sourceKey: String, sourceName: String): VideoInfo = VideoInfo(
@@ -62,6 +69,7 @@ data class AdultVideo(
 /**
  * 分页响应。
  */
+@Serializable
 data class AdultVideoPage(
     val list: List<AdultVideo>,
     val total: Int,
