@@ -3,8 +3,9 @@ name: Build & Publish APK
 # 每次 push 到 master 自动构建 debug APK 并发布到 GitHub Release（tag = v{versionName}），
 # 同版本重复推送时删除旧 Release 后重建，保证 Release 始终对应最新提交。
 #
-# 签名：构建前从 secrets（RELEASE_KEYSTORE_B64 / RELEASE_SIGNING_PROPS_B64）还原稳定
-# 签名密钥库，debug 构建也使用稳定签名（见 build.gradle.kts），保证可覆盖安装升级不丢数据。
+# 签名：release-key.jks.gpg（GPG AES256 对称加密后的密钥库，随仓库提交）+ secret
+#   RELEASE_KEYSTORE_PASSPHRASE = 解密密码（同时作为 keystore 密码）。
+# 构建时解密出 release-key.jks 与 key.properties，debug 构建也使用稳定签名。
 on:
   push:
     branches: [master, main]
@@ -26,18 +27,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Restore stable signing keys from secrets
+      - name: Restore stable signing keys (gpg decrypt)
         env:
-          SIGNING_PROPS_B64: ${{ secrets.RELEASE_SIGNING_PROPS_B64 }}
-          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          PASSPHRASE: ${{ secrets.RELEASE_KEYSTORE_PASSPHRASE }}
         run: |
-          if [ -n "$SIGNING_PROPS_B64" ] && [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > release-key.jks
-            echo "$SIGNING_PROPS_B64" | base64 -d > key.properties
-            echo "signing keys restored (stable release signing for debug build)"
-          else
-            echo "WARN: signing secrets not set, debug build falls back to ephemeral debug keystore"
-          fi
+          set -e
+          gpg -d --batch --yes --pinentry-mode loopback --passphrase "$PASSPHRASE" release-key.jks.gpg > release-key.jks
+          printf 'storeFile=release-key.jks\nstorePassword=%s\nkeyAlias=selenetv\nkeyPassword=%s\n' "$PASSPHRASE" "$PASSPHRASE" > key.properties
+          echo "signing keys restored (stable release signing for debug build)"
 
       - name: Build debug APKs
         run: ./gradlew assembleDebug --no-daemon --stacktrace
