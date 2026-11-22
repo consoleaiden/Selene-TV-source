@@ -26,6 +26,9 @@ object RemoteControlServer {
 
     fun getPort(): Int = currentPort
 
+    /** 服务是否已真正启动（供设置页展示状态 / 自检入口使用）。 */
+    fun isRunning(): Boolean = server != null
+
     fun setKeyEventCallback(callback: (Int) -> Unit) {
         keyEventCallback = callback
     }

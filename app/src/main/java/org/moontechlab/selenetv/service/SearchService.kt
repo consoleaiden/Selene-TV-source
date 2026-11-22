@@ -94,6 +94,8 @@ object SearchService {
 
         val origin = AppDataService.getSearchOriginSync()
         Log.d(TAG, "startSearch query=\"$trimmedQuery\" origin=${origin.key}")
+        // 顺带刷新 18+ 源站标记（异步防抖，失败沿用本地缓存），保证开关关闭时过滤列表新鲜
+        AdultSourceFilter.refreshAsync()
         _searchJob = serviceScope.launch {
             try {
                 when (origin) {
@@ -116,7 +118,8 @@ object SearchService {
         try {
             // 获取搜索资源列表
             val allResources = org.moontechlab.selenetv.data.Repositories.sources().getSearchResources()
-            val resources = allResources.filter { !it.disabled }
+            // 18+ 开关关闭时跳过 18+ 源站（开关开启时短路零开销）
+            val resources = allResources.filter { !it.disabled && !AdultSourceFilter.shouldFilterOut(it.key) }
 
             if (resources.isEmpty()) {
                 _eventFlow.emit(SearchEvent.Error("没有可用的搜索资源"))
@@ -346,6 +349,8 @@ object SearchService {
                                         null
                                     }
                                 }
+                                // 18+ 开关关闭时丢弃 18+ 源站的整批结果（仍计入进度）
+                                .filter { !AdultSourceFilter.shouldFilterOut(it.source) }
                                 if (parsed.isNotEmpty()) {
                                     _eventFlow.emit(SearchEvent.Results(parsed))
                                 }

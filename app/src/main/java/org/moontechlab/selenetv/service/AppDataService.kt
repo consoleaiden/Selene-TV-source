@@ -39,6 +39,9 @@ object AppDataService {
     private const val KEY_ADFILTER_PACK_VERSION = "adfilter_pack_version" // 规则包版本号
     private const val KEY_ADFILTER_PULL_AT = "adfilter_pull_at"          // 上次拉取时间戳（TTL 防抖）
     private const val KEY_ADULT_CONTENT_ENABLED = "adult_content_enabled" // 18+ 内容显示开关（默认开）
+    private const val KEY_ADULT_SOURCE_KEYS = "adult_source_keys"        // 18+ 源站 key 的 CSV（本地同步缓存）
+    private const val KEY_IMAGE_PROXY_ENABLED = "image_proxy_enabled"    // 图片代理开关（默认关）
+    private const val KEY_IMAGE_PROXY_URL = "image_proxy_url"            // 图片代理地址模板
     private const val KEY_DANMAKU_ENABLED = "danmaku_enabled"   // 旧开关（仅迁移读）
     private const val KEY_DANMAKU_AREA = "danmaku_area"         // 显示区域：off/third/half/full（off=播放页暂时关闭）
     private const val KEY_DANMAKU_LAST_AREA = "danmaku_last_area" // 上次非 off 区域：弹幕「开关」一键开启时恢复到此
@@ -653,6 +656,34 @@ object AppDataService {
 
     fun setAdultContentEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_ADULT_CONTENT_ENABLED, enabled).apply()
+    }
+
+    /** 18+ 源站 key 的本地缓存（CSV）。由 AdultSourceFilter 从服务端同步后写入。 */
+    fun getAdultSourceKeysSync(): Set<String> =
+        prefs.getString(KEY_ADULT_SOURCE_KEYS, null)?.split(",")?.filter { it.isNotBlank() }?.toSet()
+            ?: emptySet()
+
+    fun setAdultSourceKeysSync(keys: Set<String>) {
+        if (keys.isEmpty()) {
+            prefs.edit().remove(KEY_ADULT_SOURCE_KEYS).apply()
+        } else {
+            prefs.edit().putString(KEY_ADULT_SOURCE_KEYS, keys.joinToString(",")).apply()
+        }
+    }
+
+    // ==================== 图片代理设置 ====================
+
+    /** 图片代理开关，默认关。启用且配置了地址后，封面图优先走代理加载。 */
+    fun isImageProxyEnabledSync(): Boolean = prefs.getBoolean(KEY_IMAGE_PROXY_ENABLED, false)
+
+    fun setImageProxyEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_IMAGE_PROXY_ENABLED, enabled).apply()
+    }
+
+    fun getImageProxyUrlSync(): String? = prefs.getString(KEY_IMAGE_PROXY_URL, null)
+
+    fun saveImageProxyUrl(url: String) {
+        prefs.edit().putString(KEY_IMAGE_PROXY_URL, url.trim()).apply()
     }
 
     /** 服务端下发的规则包原文（rules 对象 JSON）；空 = 用内置规则。 */

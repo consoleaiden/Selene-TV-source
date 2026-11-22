@@ -74,29 +74,96 @@ private val LogoutButtonBgFocused = Color(0xFFE74C3C) // 退出登录聚焦填�
 /**
  * 获取设备所有 IPv4 地址（除回环 IP）
  */
-private fun getAllIpAddresses(): List<String> {
-    val allIps = mutableListOf<String>()
-    try {
-        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
-            if (networkInterface.isUp && !networkInterface.isLoopback) {
-                networkInterface.inetAddresses?.toList()?.forEach { address ->
-                    if (!address.isLoopbackAddress && address.hostAddress?.contains('.') == true) {
-                        address.hostAddress?.let { allIps.add(it) }
-                    }
-                }
-            }
-        }
-    } catch (_: Exception) {}
-    return allIps
+/**
+ * 一个可用的本机 IPv4 地址 + 所属网卡名。
+ * 网卡名用于在 IP 选择弹框里区分物理网卡与虚拟网卡（wlan0 / eth0 / tun0 …）。
+ */
+private data class IpCandidate(val ip: String, val iface: String)
+
+/**
+ * 判断地址是否为「手机不可能访问」的特殊网段：
+ *  - 100.64.0.0/10   Tailscale / 运营商级 NAT（CGNAT）
+ *  - 198.18.0.0/15   常见代理软件的 fake-ip 网段（Clash 等 tun 模式）
+ *  - 169.254.0.0/16  APIPA（未拿到 DHCP 时的自动地址）
+ */
+private fun isUnreachableRange(ip: String): Boolean {
+    val parts = ip.split(".")
+    if (parts.size != 4) return false
+    val a = parts[0].toIntOrNull() ?: return false
+    val b = parts[1].toIntOrNull() ?: return false
+    return (a == 100 && b in 64..127) || (a == 198 && b in 18..19) || (a == 169 && b == 254)
+}
+
+/** 虚拟/隧道网卡不参与二维码 IP 候选（VPN、移动数据、docker、p2p 等）。 */
+private fun isVirtualInterface(name: String): Boolean {
+    val n = name.lowercase()
+    return n.startsWith("tun") || n.startsWith("tap") || n.startsWith("ppp") ||
+        n.contains("rmnet") || n.contains("clat") || n.startsWith("dummy") ||
+        n.startsWith("ifb") || n.startsWith("wg") || n.contains("tailscale") ||
+        n.startsWith("ipsec") || n.startsWith("p2p") || n.contains("veth") ||
+        n.contains("docker") || n.contains("bridge") || n.startsWith("zt")
+}
+
+/** 物理网卡优先级：Wi-Fi > 有线 > 热点 > 其他 */
+private fun ifaceRank(name: String): Int {
+    val n = name.lowercase()
+    return when {
+        n.startsWith("wlan") || n.startsWith("wifi") -> 0
+        n.startsWith("eth") -> 1
+        n.startsWith("ap") || n.contains("softap") -> 2
+        else -> 3
+    }
+}
+
+/** 私网段优先级：192.168 > 10 > 172.16-31 > 其他 */
+private fun ipRank(ip: String): Int {
+    val a = ip.substringBefore(".").toIntOrNull() ?: return 9
+    val b = ip.split(".").getOrNull(1)?.toIntOrNull() ?: 0
+    return when {
+        a == 192 && b == 168 -> 0
+        a == 10 -> 1
+        a == 172 && b in 16..31 -> 2
+        else -> 3
+    }
 }
 
 /**
- * 获取设备所有 IPv4 地址，优先返回 192.168.x.x 网段
+ * 枚举本机可用于遥控二维码的 IPv4 地址。
+ * 过滤掉回环、APIPA、CGNAT/fake-ip 以及虚拟网卡，按「物理网卡 + 私网段」排序，
+ * 避免在有 VPN/代理软件（tun0、Tailscale）的机顶盒上选中手机无法访问的地址。
+ */
+private fun getAllIpCandidates(): List<IpCandidate> {
+    val out = mutableListOf<IpCandidate>()
+    try {
+        NetworkInterface.getNetworkInterfaces()?.toList()?.forEach { networkInterface ->
+            if (!networkInterface.isUp || networkInterface.isLoopback) return@forEach
+            if (isVirtualInterface(networkInterface.name)) return@forEach
+            networkInterface.inetAddresses?.toList()?.forEach { address ->
+                val host = address.hostAddress ?: return@forEach
+                if (address.isLoopbackAddress) return@forEach
+                if (!host.contains('.')) return@forEach          // 跳过 IPv6
+                if (host.startsWith("0.") || host.startsWith("127.")) return@forEach
+                if (isUnreachableRange(host)) return@forEach
+                out.add(IpCandidate(host, networkInterface.name))
+            }
+        }
+    } catch (_: Exception) {}
+    return out
+        .distinctBy { it.ip }
+        .sortedWith(compareBy({ ifaceRank(it.iface) }, { ipRank(it.ip) }))
+}
+
+/**
+ * 获取设备所有可用 IPv4 地址（已过滤虚拟网卡与不可达网段，按优先级排序）
+ */
+private fun getAllIpAddresses(): List<String> = getAllIpCandidates().map { it.ip }
+
+/**
+ * 获取首选 IPv4 地址：先按网卡优先级，再优先 192.168.x.x 网段
  */
 private fun getPreferredIpAddress(): String? {
-    val allIps = getAllIpAddresses()
-    // 优先选择 192.168.x.x 网段
-    return allIps.find { it.startsWith("192.168.") } ?: allIps.firstOrNull()
+    val candidates = getAllIpCandidates()
+    return candidates.firstOrNull { it.ip.startsWith("192.168.") }?.ip ?: candidates.firstOrNull()?.ip
 }
 
 @Composable
@@ -134,8 +201,15 @@ fun SettingsTab(
     // IP 选择相关状态
     var showIpSelectDialog by remember { mutableStateOf(false) }
     var availableIps by remember { mutableStateOf<List<String>>(emptyList()) }
+    // IP → 网卡名（wlan0 / eth0 …），用于在选择弹框里区分物理/虚拟网卡
+    var ipIfaces by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     // 初值留空，IP 在下方 LaunchedEffect 中于 IO 线程异步枚举，避免组合期阻塞
     var selectedIp by remember { mutableStateOf("") }
+
+    // 遥控服务状态（设置页诊断用）：是否运行 / 端口 / 本机自检结果
+    var remoteServerRunning by remember { mutableStateOf(false) }
+    var remoteServerPort by remember { mutableIntStateOf(org.moontechlab.selenetv.server.RemoteControlServer.getPort()) }
+    var remoteSelfTest by remember { mutableStateOf("未检测") }
 
     // 豆瓣源选择弹框状态
     var showDoubanDataSourceDialog by remember { mutableStateOf(false) }
@@ -155,6 +229,13 @@ fun SettingsTab(
     var adultContentEnabled by remember { mutableStateOf(AppDataService.isAdultContentEnabledSync()) }
     val adultContentFocusRequester = remember { FocusRequester() }
 
+    // 图片代理：开关 + 代理地址
+    var imageProxyEnabled by remember { mutableStateOf(AppDataService.isImageProxyEnabledSync()) }
+    var imageProxyUrl by remember { mutableStateOf("") }
+    var showImageProxyUrlDialog by remember { mutableStateOf(false) }
+    val imageProxyEnabledFocusRequester = remember { FocusRequester() }
+    val imageProxyUrlFocusRequester = remember { FocusRequester() }
+
     // 退出登录两步弹框（均由「登录实例」项触发）：
     // A 登录实例弹框（含单个退出登录按钮）→ B 二次确认弹框（取消 / 确认）
     var showLogoutDialog by remember { mutableStateOf(false) }
@@ -167,6 +248,8 @@ fun SettingsTab(
     // 各设置项的 FocusRequester
     val loginInstanceFocusRequester = remember { FocusRequester() }
     val ipSettingFocusRequester = remember { FocusRequester() }
+    val remoteServiceFocusRequester = remember { FocusRequester() }
+    val remoteSelfTestFocusRequester = remember { FocusRequester() }
     val doubanDataSourceFocusRequester = remember { FocusRequester() }
     val playerTypeFocusRequester = remember { FocusRequester() }
     val decodeModeFocusRequester = remember { FocusRequester() }
@@ -223,6 +306,47 @@ fun SettingsTab(
     // 不在组合时自动抢焦点：与其他 Tab 一致，切到设置后焦点应停留在顶部 TabSwitcher，
     // 由 TabSwitcher.onNavigateDown → settingsFocusRequester 在按「下」键时再进入内容。
 
+    /**
+     * 遥控服务自检：
+     *  1) 服务未运行 → 尝试重启一次（覆盖「服务在后台被系统回收」等场景）
+     *  2) 用 127.0.0.1 访问 /api/ping 验证 HTTP 服务真实可用
+     * 结果写入 remoteSelfTest，供设置页展示；失败时用户能立刻区分「服务没起来」和「手机网络不通」。
+     */
+    fun runRemoteSelfTest() {
+        coroutineScope.launch {
+            remoteSelfTest = "检测中…"
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    if (!org.moontechlab.selenetv.server.RemoteControlServer.isRunning()) {
+                        org.moontechlab.selenetv.server.RemoteControlServer.start()
+                    }
+                    val running = org.moontechlab.selenetv.server.RemoteControlServer.isRunning()
+                    val port = org.moontechlab.selenetv.server.RemoteControlServer.getPort()
+                    withContext(Dispatchers.Main) {
+                        remoteServerRunning = running
+                        remoteServerPort = port
+                    }
+                    if (!running) return@withContext false
+                    val conn = (java.net.URL("http://127.0.0.1:$port/api/ping").openConnection()
+                        as java.net.HttpURLConnection).apply {
+                        connectTimeout = 3000
+                        readTimeout = 3000
+                    }
+                    val body = try {
+                        conn.inputStream.bufferedReader().use { it.readText() }
+                    } finally {
+                        conn.disconnect()
+                    }
+                    conn.responseCode == 200 && body.contains("pong")
+                } catch (e: Exception) {
+                    android.util.Log.w("SettingsTab", "remote self-test failed: ${e.message}")
+                    false
+                }
+            }
+            remoteSelfTest = if (ok) "正常" else "失败"
+        }
+    }
+
     // 加载数据
     LaunchedEffect(Unit) {
         hasLogin = AppDataService.isLoggedIn()
@@ -236,17 +360,24 @@ fun SettingsTab(
         bangumiImageSource = AppDataService.getBangumiImageSourceDisplayName()
         tmdbApiKey = AppDataService.getTmdbApiKey()
         m3u8ProxyUrl = AppDataService.getM3u8ProxyUrl()
+        imageProxyUrl = AppDataService.getImageProxyUrlSync() ?: ""
+        imageProxyEnabled = AppDataService.isImageProxyEnabledSync()
         playerType = AppDataService.getPlayerTypeDisplayName()
         decodeMode = AppDataService.getDecodeModeDisplayName()
         searchOrigin = AppDataService.getSearchOriginDisplayName()
         adFilterEnabled = AppDataService.isAdFilterEnabledSync()
         adFilterStatus = AdFilter.statusLine()
         // 加载可用 IP 列表（网络接口枚举可能阻塞，放到 IO 线程）
-        val ips = withContext(Dispatchers.IO) { getAllIpAddresses() }
-        availableIps = ips
+        // 已过滤 VPN/隧道/虚拟网卡，避免选中手机无法访问的地址
+        val candidates = withContext(Dispatchers.IO) { getAllIpCandidates() }
+        ipIfaces = candidates.associate { it.ip to it.iface }
+        availableIps = candidates.map { it.ip }
         if (selectedIp.isEmpty()) {
-            selectedIp = ips.find { it.startsWith("192.168.") } ?: ips.firstOrNull() ?: ""
+            selectedIp = candidates.firstOrNull { it.ip.startsWith("192.168.") }?.ip
+                ?: candidates.firstOrNull()?.ip ?: ""
         }
+        // 进入设置页即自检遥控服务（未运行则自动重启一次）
+        runRemoteSelfTest()
         isLocalMode = AppDataService.isLocalMode()
         if (isLocalMode) {
             subscriptionUrl = LocalStore.getSubscriptionUrl().orEmpty()
@@ -272,6 +403,8 @@ fun SettingsTab(
             // 左侧二维码区域 - 占50%
             RemoteControlQrCode(
                 selectedIp = selectedIp,
+                serverRunning = remoteServerRunning,
+                selfTest = remoteSelfTest,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
@@ -357,9 +490,23 @@ fun SettingsTab(
                 SettingRow(
                     label = "调整遥控二维码 IP",
                     value = selectedIp.ifEmpty { "未知" },
-                    showDivider = false,
                     onClick = { showIpSelectDialog = true },
                     modifier = Modifier.focusRequester(ipSettingFocusRequester)
+                )
+                // 遥控服务状态：显示是否运行与实际端口（端口冲突时会自动顺延，这里展示真实端口）
+                SettingRow(
+                    label = "遥控服务",
+                    value = if (remoteServerRunning) "运行中 · 端口 $remoteServerPort" else "未启动",
+                    onClick = { runRemoteSelfTest() },
+                    modifier = Modifier.focusRequester(remoteServiceFocusRequester)
+                )
+                // 本机自检：点按重新检测（服务未运行会自动尝试重启一次）
+                SettingRow(
+                    label = "遥控服务自检",
+                    value = remoteSelfTest,
+                    showDivider = false,
+                    onClick = { runRemoteSelfTest() },
+                    modifier = Modifier.focusRequester(remoteSelfTestFocusRequester)
                 )
 
                 Spacer(modifier = Modifier.height(18.dp))
@@ -426,9 +573,26 @@ fun SettingsTab(
                 SettingRow(
                     label = "M3U8 代理",
                     value = m3u8ProxyUrl.ifEmpty { "未设置" },
-                    showDivider = false,
                     onClick = { showM3u8ProxyDialog = true },
                     modifier = Modifier.focusRequester(m3u8ProxyFocusRequester)
+                )
+                // 图片代理：启用且配置地址后封面图优先走代理，失败自动回退原图
+                SettingRow(
+                    label = "图片代理",
+                    value = if (imageProxyEnabled) "开启" else "关闭",
+                    onClick = {
+                        val next = !imageProxyEnabled
+                        imageProxyEnabled = next
+                        AppDataService.setImageProxyEnabled(next)
+                    },
+                    modifier = Modifier.focusRequester(imageProxyEnabledFocusRequester)
+                )
+                SettingRow(
+                    label = "图片代理地址",
+                    value = imageProxyUrl.ifEmpty { "未设置" },
+                    showDivider = false,
+                    onClick = { showImageProxyUrlDialog = true },
+                    modifier = Modifier.focusRequester(imageProxyUrlFocusRequester)
                 )
 
                 if (!isLocalMode) {
@@ -551,6 +715,7 @@ fun SettingsTab(
     ) { onClose ->
         IpSelectDialogContent(
             availableIps = availableIps,
+            ifaceByIp = ipIfaces,
             currentIp = selectedIp,
             onIpSelected = { ip ->
                 selectedIp = ip
@@ -806,6 +971,27 @@ fun SettingsTab(
                 coroutineScope.launch {
                     AppDataService.saveM3u8ProxyUrl(value)
                     m3u8ProxyUrl = value
+                }
+                onClose()
+            },
+            onDismiss = onClose
+        )
+    }
+
+    // 图片代理地址输入弹框（支持 {url} 占位符或前缀拼接）
+    AnimatedSelectDialog(
+        visible = showImageProxyUrlDialog,
+        onDismiss = { showImageProxyUrlDialog = false },
+        onClosed = { imageProxyUrlFocusRequester.requestFocus() }
+    ) { onClose ->
+        TextInputDialogContent(
+            title = "图片代理地址",
+            placeholder = "如 https://images.weserv.nl/?url={url}",
+            initialValue = imageProxyUrl,
+            onConfirm = { value ->
+                coroutineScope.launch {
+                    AppDataService.saveImageProxyUrl(value)
+                    imageProxyUrl = value
                 }
                 onClose()
             },
@@ -1070,7 +1256,8 @@ private fun IpSelectDialogContent(
     availableIps: List<String>,
     currentIp: String,
     onIpSelected: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    ifaceByIp: Map<String, String> = emptyMap()
 ) {
     val firstItemFocusRequester = remember { FocusRequester() }
 
@@ -1109,6 +1296,7 @@ private fun IpSelectDialogContent(
                 ip = ip,
                 isSelected = currentIp == ip,
                 onClick = { onIpSelected(ip) },
+                ifaceByIp = ifaceByIp,
                 modifier = if (index == 0) Modifier.focusRequester(firstItemFocusRequester) else Modifier
             )
             Spacer(modifier = Modifier.height(10.dp))
@@ -1455,7 +1643,8 @@ private fun IpSelectItem(
     ip: String,
     isSelected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    ifaceByIp: Map<String, String> = emptyMap()
 ) {
     var isFocused by remember { mutableStateOf(false) }
 
@@ -1480,11 +1669,21 @@ private fun IpSelectItem(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = ip,
-                fontSize = 14.sp,
-                color = textColor
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = ip,
+                    fontSize = 14.sp,
+                    color = textColor
+                )
+                // 网卡名（wlan0 / eth0 …）：帮助在有 VPN/多网卡的设备上选对地址
+                ifaceByIp[ip]?.let { iface ->
+                    Text(
+                        text = "  · $iface",
+                        fontSize = 12.sp,
+                        color = TextGray
+                    )
+                }
+            }
             if (isSelected) {
                 Text(
                     text = "✓",
@@ -1502,6 +1701,8 @@ private fun IpSelectItem(
 @Composable
 private fun RemoteControlQrCode(
     selectedIp: String,
+    serverRunning: Boolean = true,
+    selfTest: String = "",
     modifier: Modifier = Modifier
 ) {
     var qrBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -1571,12 +1772,25 @@ private fun RemoteControlQrCode(
                 fontSize = 13.sp,
                 color = TextGray
             )
-            
+
             Spacer(modifier = Modifier.height(6.dp))
-            
+
+            // 服务状态行：服务未起 / 自检失败时用醒目颜色，避免用户拿着一个打不开的地址反复试
             Text(
-                text = "若 IP 非本机 IP，可在右侧选项调整",
+                text = when {
+                    !serverRunning -> "⚠ 遥控服务未启动，点击右侧「遥控服务自检」重试"
+                    selfTest == "失败" -> "⚠ 遥控服务自检失败，请返回重试或重启应用"
+                    else -> "服务状态：运行中 · 自检${if (selfTest.isEmpty()) "中…" else selfTest}"
+                },
                 fontSize = 13.sp,
+                color = if (!serverRunning || selfTest == "失败") Color(0xFFFF6B6B) else Color(0xFF5AD07A)
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "若手机打不开：① 确认手机与本机连同一 Wi-Fi；② 关闭路由器的 AP 隔离；③ 本机若装了 VPN/代理软件，请在右侧改选 wlan0/eth0 的 IP",
+                fontSize = 12.sp,
                 color = TextGray.copy(alpha = 0.7f)
             )
         }

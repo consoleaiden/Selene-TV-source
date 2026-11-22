@@ -52,6 +52,9 @@ class SeleneApplication : Application(), ImageLoaderFactory {
                 val ok = SubscriptionService.refreshAndPersist()
                 if (!ok) withContext(Dispatchers.Main) { MoonToast.show("订阅刷新失败") }
             }
+        } else {
+            // 服务端模式启动后台同步 18+ 源站标记（供历史/收藏/搜索过滤使用，失败静默）
+            org.moontechlab.selenetv.service.AdultSourceFilter.refreshAsync()
         }
     }
     
@@ -84,6 +87,62 @@ class SeleneApplication : Application(), ImageLoaderFactory {
     }
     
     /**
+     * 图片代理拦截器
+     * 启用且配置了代理地址后，封面图 URL 优先改写为代理地址；
+     * 代理加载失败（HTTP 非 2xx / 连接异常）自动回退原始地址重试一次。
+     * 未启用 / 未配置 / 非 http(s) 原图 / 原图本身就是代理服务器 时直通，零改动。
+     */
+    private class ImageProxyInterceptor : Interceptor {
+        override fun intercept(chain: Interceptor.Chain): Response {
+            val original = chain.request()
+            val data = original.url.toString()
+
+            val proxiedUrl = ImageProxy.buildProxiedUrl(data) ?: return chain.proceed(original)
+            Log.d("ImageProxy", "proxy in use: $proxiedUrl")
+
+            val proxiedRequest = original.newBuilder()
+                .url(proxiedUrl)
+                .build()
+            return try {
+                val response = chain.proceed(proxiedRequest)
+                if (response.isSuccessful) {
+                    response
+                } else {
+                    Log.w("ImageProxy", "proxy HTTP ${response.code}, fallback to original")
+                    response.close()
+                    chain.proceed(original)   // 代理失败 → 回退原图
+                }
+            } catch (e: Exception) {
+                Log.w("ImageProxy", "proxy failed (${e.message}), fallback to original")
+                chain.proceed(original)       // 代理网络异常 → 回退原图
+            }
+        }
+    }
+
+    /**
+     * 图片代理地址组装。
+     * - 配置含 {url} 占位符：替换为 URL 编码后的原图地址（如 https://images.weserv.nl/?url={url}）
+     * - 否则视为前缀：直接拼接 前缀 + 原图地址
+     */
+    object ImageProxy {
+        fun buildProxiedUrl(originalUrl: String): String? {
+            if (!AppDataService.isImageProxyEnabledSync()) return null
+            val template = AppDataService.getImageProxyUrlSync()?.trim().takeUnless { it.isNullOrEmpty() }
+                ?: return null
+            if (!originalUrl.startsWith("http://") && !originalUrl.startsWith("https://")) return null
+            // 防自环：原图已在代理服务器上时不再包一层
+            val proxyHost = template.toHttpUrlOrNull()?.host
+            val originalHost = originalUrl.toHttpUrlOrNull()?.host
+            if (proxyHost != null && proxyHost == originalHost) return null
+            return if (template.contains("{url}")) {
+                template.replace("{url}", java.net.URLEncoder.encode(originalUrl, "UTF-8"))
+            } else {
+                template + originalUrl
+            }
+        }
+    }
+
+    /**
      * 创建信任所有证书的 OkHttpClient
      * 用于解决某些 CDN 证书不被信任的问题
      */
@@ -101,14 +160,16 @@ class SeleneApplication : Application(), ImageLoaderFactory {
             return OkHttpClient.Builder()
                 .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
                 .hostnameVerifier { _, _ -> true }
-                .callTimeout(5, java.util.concurrent.TimeUnit.SECONDS) // 图片整体加载上限,超时即落「暂无封面」
+                .callTimeout(8, java.util.concurrent.TimeUnit.SECONDS) // 走代理链路更长，放宽整体上限
+                .addInterceptor(ImageProxyInterceptor())
                 .addInterceptor(ImageHeaderInterceptor())
                 .addInterceptor(ImageLoggingInterceptor())
                 .build()
         } catch (e: Exception) {
             Log.e("SeleneApplication", "Failed to create unsafe OkHttpClient", e)
             return OkHttpClient.Builder()
-                .callTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                .callTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                .addInterceptor(ImageProxyInterceptor())
                 .addInterceptor(ImageHeaderInterceptor())
                 .addInterceptor(ImageLoggingInterceptor())
                 .build()

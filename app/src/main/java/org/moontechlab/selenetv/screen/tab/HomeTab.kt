@@ -31,6 +31,7 @@ import org.moontechlab.selenetv.data.Repositories
 import org.moontechlab.selenetv.service.ApiResponse
 import org.moontechlab.selenetv.service.ApiService
 import org.moontechlab.selenetv.service.AppDataService
+import org.moontechlab.selenetv.service.AdultSourceFilter
 import org.moontechlab.selenetv.service.BangumiService
 import org.moontechlab.selenetv.service.DoubanService
 import org.moontechlab.selenetv.ui.CardContextMenu
@@ -185,6 +186,8 @@ fun HomeTab(
             return
         }
         coroutineScope.launch {
+            // 顺带刷新 18+ 源站标记（异步防抖），保证历史/收藏过滤列表新鲜
+            AdultSourceFilter.refreshAsync()
             // 刷新时若已有数据，保持现有卡片、静默原地刷新；不要切到骨架屏。
             // 否则会销毁正在聚焦的卡片，导致从详情返回时焦点被 focusRestorer 重置到第一个。
             if (playRecords.isEmpty()) isLoadingPlayRecords = true
@@ -197,7 +200,9 @@ fun HomeTab(
                     Repositories.userData().getPlayRecords()
                 }
                 playRecordsMap = records
+                // 18+ 开关关闭时隐藏 18+ 源站的播放记录（服务端仍保留数据，重新开启即恢复）
                 val newRecords = records.values
+                    .filter { !AdultSourceFilter.shouldFilterOut(it.source) }
                     .sortedByDescending { it.saveTime }
                     .map { it.toVideoInfo() }
                 // 数据未变则不重新赋值，避免触发 LazyRow 的 focusRestorer 把焦点重置到第一个
@@ -214,7 +219,10 @@ fun HomeTab(
                 val favList = withContext(Dispatchers.IO) {
                     Repositories.userData().getFavorites()
                 }
-                val newFavs = favList.map { fav ->
+                // 18+ 开关关闭时隐藏 18+ 源站的收藏条目
+                val newFavs = favList
+                    .filter { !AdultSourceFilter.shouldFilterOut(it.source) }
+                    .map { fav ->
                     val key = "${fav.source}+${fav.id}"
                     val matchedRecord = playRecordsMap[key]
                     val videoInfo = fav.toVideoInfo()
